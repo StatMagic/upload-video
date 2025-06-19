@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S3 File Uploader</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>Upload Game Files to S3</h1>
+    <div id="upload-form">
+        <label for="gameName">Game Name:</label>
+        <input type="text" id="gameName" name="gameName">
+
+        <label for="folderName">Folder Name:</label>
+        <input type="text" id="folderName" name="folderName" disabled>
+
+        <label for="zipFile">Zip File:</label>
+        <input type="file" id="zipFile" name="zipFile" accept=".zip">
+
+        <label for="videoFile">Video File:</label>
+        <input type="file" id="videoFile" name="videoFile" accept="video/*">
+
+        <button id="uploadButton">Upload</button>
+    </div>
+    <div id="progress-container">
+        <h2>Upload Progress</h2>
+        <div id="zip-progress">
+            <p>Zip File: <span class="status">Not started</span></p>
+            <div class="progress-bar">
+                <div class="progress-bar-inner"></div>
+            </div>
+        </div>
+        <div id="video-progress">
+            <p>Video File: <span class="status">Not started</span></p>
+            <div class="progress-bar">
+                <div class="progress-bar-inner"></div>
+            </div>
+        </div>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html> 
