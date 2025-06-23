@@ -1,52 +1,80 @@
 // PLEASE CONFIGURE THIS WITH THE URL OF YOUR API GATEWAY ENDPOINT
 const API_GATEWAY_URL = "https://quf9mii5ia.execute-api.ap-south-1.amazonaws.com/default/uploadVideo";
+const CONCATENATE_API_URL = "https://tw60zlvgf3.execute-api.ap-south-1.amazonaws.com/default/concatenateVideos"; // <-- NEW: CONFIGURE THIS
 
-// DOM elements
+// --- STATE ---
+let videoFiles = []; // Array to hold File objects for the multi-upload list
+
+// --- DOM ELEMENTS ---
 const gameNameInput = document.getElementById("gameName");
 const folderNameInput = document.getElementById("folderName");
 const zipFileInput = document.getElementById("zipFile");
-const videoFileInput = document.getElementById("videoFile");
 const uploadButton = document.getElementById("uploadButton");
 const zipProgress = document.getElementById("zip-progress");
 const videoProgress = document.getElementById("video-progress");
 
-// Function to generate and set the folder name based on game name
-const updateFolderName = () => {
-    const today = new Date();
-    const dateString = today.toISOString().split("T")[0]; // YYYY-MM-DD
-    const gameName = gameNameInput.value.trim();
+// Mode selection
+const singleVideoContainer = document.getElementById("single-video-container");
+const multiVideoContainer = document.getElementById("multi-video-container");
+const addVideoFileInput = document.getElementById("addVideoFile");
+const videoFileList = document.getElementById("video-file-list");
+const emptyListMessage = document.querySelector("#multi-video-container .empty-list-message");
 
-    if (gameName) {
-        // Sanitize gameName for use in a folder name: replace spaces with hyphens, remove invalid characters
-        const sanitizedGameName = gameName.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '');
-        folderNameInput.value = `${dateString}-${sanitizedGameName}`;
-    } else {
-        // Default value when game name is empty
-        folderNameInput.value = `${dateString}-your-game-name`;
+// Single-file input (for single video mode)
+const singleVideoInput = document.getElementById("videoFile");
+
+// --- EVENT LISTENERS ---
+
+// Switch between single and multi-video upload modes
+document.querySelectorAll('input[name="video-mode"]').forEach(radio => {
+    radio.addEventListener('change', (event) => {
+        if (event.target.value === 'single') {
+            singleVideoContainer.style.display = 'block';
+            multiVideoContainer.style.display = 'none';
+        } else {
+            singleVideoContainer.style.display = 'none';
+            multiVideoContainer.style.display = 'block';
+        }
+    });
+});
+
+// Add a video to the list in multi-upload mode
+addVideoFileInput.addEventListener('change', () => {
+    const file = addVideoFileInput.files[0];
+    if (file) {
+        videoFiles.push(file);
+        renderVideoList();
     }
-};
+    addVideoFileInput.value = ''; // Reset input
+});
 
-// Set the initial folder name and update it whenever the game name changes
-window.onload = updateFolderName;
-gameNameInput.addEventListener('input', updateFolderName);
-
-// Upload button event listener
+// Main upload button click handler
 uploadButton.addEventListener("click", async () => {
     const gameName = gameNameInput.value.trim();
     const folderName = folderNameInput.value;
     const zipFile = zipFileInput.files[0];
-    const videoFile = videoFileInput.files[0];
+    const uploadMode = document.querySelector('input[name="video-mode"]:checked').value;
 
+    let finalVideoFiles = [];
+    if (uploadMode === 'single') {
+        if (singleVideoInput.files[0]) {
+            finalVideoFiles.push(singleVideoInput.files[0]);
+        }
+    } else {
+        finalVideoFiles = videoFiles;
+    }
+    
+    // --- VALIDATION ---
     if (!gameName) {
         alert("Please enter a game name.");
         return;
     }
-    if (!zipFile) {
-        alert("Please select a zip file.");
+    if (!zipFile && finalVideoFiles.length === 0) {
+        alert("Please select a zip file or at least one video file.");
         return;
     }
-    if (!videoFile) {
-        alert("Please select a video file.");
+    if (finalVideoFiles.length === 0) {
+        alert("Please select at least one video file.");
         return;
     }
     if (!API_GATEWAY_URL || API_GATEWAY_URL === "YOUR_API_GATEWAY_URL") {
@@ -54,23 +82,29 @@ uploadButton.addEventListener("click", async () => {
         return;
     }
 
-    // Disable button during upload
+    // --- RESET UI ---
+    resetProgress(zipProgress);
+    resetProgress(videoProgress);
     uploadButton.disabled = true;
     uploadButton.textContent = "Getting upload URLs...";
 
+    // --- API PAYLOAD PREPARATION ---
     try {
-        // 1. Get pre-signed URLs from our Lambda function
+        const videoPayload = finalVideoFiles.map(file => ({ videoFileType: file.type }));
+        const payload = {
+            gameName,
+            folderName,
+            videos: videoPayload,
+        };
+        if (zipFile) {
+            payload.zipFileType = zipFile.type;
+        }
+
+        // --- API CALL ---
         const response = await fetch(API_GATEWAY_URL, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                gameName: gameName,
-                folderName: folderName,
-                zipFileType: zipFile.type,
-                videoFileType: videoFile.type
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
         });
 
         if (!response.ok) {
@@ -78,14 +112,36 @@ uploadButton.addEventListener("click", async () => {
             throw new Error(errorData.error || `Server error: ${response.status}`);
         }
 
-        const { zipUploadUrl, videoUploadUrl } = await response.json();
+        const { zipUploadUrl, videoUploadUrls, uploadSessionId } = await response.json();
         uploadButton.textContent = "Uploading...";
+        
+        // --- UPLOAD EXECUTION ---
+        const uploadPromises = [];
+        if (zipFile && zipUploadUrl) {
+            uploadPromises.push(uploadFile(zipFile, zipUploadUrl, zipProgress));
+        }
 
-        // 2. Upload files concurrently using the pre-signed URLs
-        const zipUploadPromise = uploadFile(zipFile, zipUploadUrl, zipProgress);
-        const videoUploadPromise = uploadFile(videoFile, videoUploadUrl, videoProgress);
-
-        await Promise.all([zipUploadPromise, videoUploadPromise]);
+        if (finalVideoFiles.length > 0 && videoUploadUrls && videoUploadUrls.length > 0) {
+            const videoUploadPromise = uploadVideos(finalVideoFiles, videoUploadUrls, videoProgress);
+            uploadPromises.push(videoUploadPromise);
+        }
+        
+        await Promise.all(uploadPromises);
+        
+        // --- CONCATENATION TRIGGER ---
+        if (uploadMode === 'multiple' && finalVideoFiles.length > 1) {
+            uploadButton.textContent = "Processing...";
+            const videoStatus = videoProgress.querySelector('.status');
+            const videoPercent = videoProgress.querySelector('.percent-text');
+            videoStatus.textContent = 'Uploads complete.';
+            videoPercent.textContent = 'Now processing...';
+            
+            await triggerConcatenation(uploadSessionId, folderName, gameName);
+            
+            videoStatus.textContent = 'Processing complete!';
+            videoPercent.textContent = '✅';
+            videoStatus.style.color = "green";
+        }
 
         uploadButton.textContent = "Done!";
 
@@ -97,6 +153,106 @@ uploadButton.addEventListener("click", async () => {
     }
 });
 
+
+// --- HELPER FUNCTIONS ---
+
+// Trigger the backend process to concatenate videos
+const triggerConcatenation = async (uploadSessionId, folderName, gameName) => {
+    if (!CONCATENATE_API_URL || CONCATENATE_API_URL === "YOUR_CONCATENATION_API_URL") {
+        alert("Please configure the CONCATENATE_API_URL in script.js");
+        throw new Error("Concatenation API URL not configured.");
+    }
+
+    const response = await fetch(CONCATENATE_API_URL, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            uploadSessionId,
+            folderName,
+            gameName
+        })
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to start concatenation process.");
+    }
+
+    console.log("Concatenation process started successfully.");
+    return response.json();
+};
+
+// Update folder name based on game name
+window.onload = () => {
+    const today = new Date();
+    const dateString = today.toISOString().split("T")[0];
+    folderNameInput.value = `${dateString}-your-game-name`;
+};
+gameNameInput.addEventListener('input', () => {
+    const today = new Date();
+    const dateString = today.toISOString().split("T")[0];
+    const gameName = gameNameInput.value.trim();
+    if (gameName) {
+        const sanitizedGameName = gameName.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '');
+        folderNameInput.value = `${dateString}-${sanitizedGameName}`;
+    } else {
+        folderNameInput.value = `${dateString}-your-game-name`;
+    }
+});
+
+// Render the list of videos for multi-upload
+const renderVideoList = () => {
+    videoFileList.innerHTML = ''; // Clear existing list
+    if (videoFiles.length === 0) {
+        emptyListMessage.style.display = 'block';
+    } else {
+        emptyListMessage.style.display = 'none';
+        videoFiles.forEach((file, index) => {
+            const li = document.createElement('li');
+            li.dataset.id = index;
+            li.innerHTML = `
+                <span>${file.name}</span>
+                <button class="remove-video-btn" data-index="${index}">&times;</button>
+            `;
+            videoFileList.appendChild(li);
+        });
+
+        // Add remove button listeners
+        document.querySelectorAll('.remove-video-btn').forEach(button => {
+            button.addEventListener('click', (e) => {
+                const indexToRemove = parseInt(e.target.dataset.index, 10);
+                videoFiles.splice(indexToRemove, 1);
+                renderVideoList();
+            });
+        });
+    }
+};
+
+// Initialize SortableJS for drag-and-drop
+new Sortable(videoFileList, {
+    animation: 150,
+    onEnd: (evt) => {
+        // Reorder the videoFiles array to match the new DOM order
+        const [movedItem] = videoFiles.splice(evt.oldIndex, 1);
+        videoFiles.splice(evt.newIndex, 0, movedItem);
+        renderVideoList(); // Re-render to update indexes
+    }
+});
+
+const resetProgress = (progressElement) => {
+    const statusElement = progressElement.querySelector(".status");
+    const progressBarInner = progressElement.querySelector(".progress-bar-inner");
+    const percentText = progressElement.querySelector(".percent-text");
+
+    statusElement.textContent = "Not started";
+    statusElement.style.color = '';
+    progressBarInner.style.width = "0%";
+    percentText.textContent = "";
+};
+
+// Upload a single file (used for the zip)
 const uploadFile = (file, url, progressElement) => {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -105,22 +261,26 @@ const uploadFile = (file, url, progressElement) => {
 
         const statusElement = progressElement.querySelector(".status");
         const progressBarInner = progressElement.querySelector(".progress-bar-inner");
+        const percentText = progressElement.querySelector(".percent-text");
 
         xhr.upload.onprogress = (event) => {
             if (event.lengthComputable) {
                 const percentUploaded = Math.round((event.loaded / event.total) * 100);
                 progressBarInner.style.width = `${percentUploaded}%`;
-                statusElement.textContent = `In progress... ${percentUploaded}%`;
+                statusElement.textContent = `In progress...`;
+                percentText.textContent = `${percentUploaded}%`;
             }
         };
 
         xhr.onload = () => {
             if (xhr.status >= 200 && xhr.status < 300) {
                 statusElement.textContent = "Completed";
+                percentText.textContent = `100%`;
                 statusElement.style.color = "green";
                 resolve(xhr.response);
             } else {
                 statusElement.textContent = `Error: Upload failed (status ${xhr.status})`;
+                percentText.textContent = "";
                 statusElement.style.color = "red";
                 reject(new Error(`Upload failed with status: ${xhr.status} - ${xhr.statusText}`));
             }
@@ -128,12 +288,72 @@ const uploadFile = (file, url, progressElement) => {
 
         xhr.onerror = () => {
             statusElement.textContent = "Error: Network error during upload.";
+            percentText.textContent = "";
             statusElement.style.color = "red";
             reject(new Error("Network error during upload."));
         };
 
-        statusElement.textContent = "In progress...";
+        statusElement.textContent = "Starting...";
+        percentText.textContent = "";
         progressBarInner.style.width = "0%";
         xhr.send(file);
+    });
+};
+
+// Upload multiple videos and track combined progress
+const uploadVideos = (files, urls, progressElement) => {
+    const totalSize = files.reduce((acc, file) => acc + file.size, 0);
+    let totalUploaded = 0;
+    let fileUploaded = new Array(files.length).fill(0);
+
+    const statusElement = progressElement.querySelector(".status");
+    const progressBarInner = progressElement.querySelector(".progress-bar-inner");
+    const progressLabel = progressElement.querySelector("p");
+    const percentText = progressElement.querySelector(".percent-text");
+
+    // Update the label text without destroying the child spans
+    progressLabel.childNodes[0].nodeValue = files.length > 1 ? 'Combined Video: ' : 'Video Upload: ';
+    statusElement.textContent = "Starting...";
+    percentText.textContent = "";
+
+    const uploadPromises = files.map((file, index) => {
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("PUT", urls[index], true);
+            xhr.setRequestHeader('Content-Type', file.type);
+            
+            xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    const loaded = event.loaded;
+                    totalUploaded += loaded - fileUploaded[index];
+                    fileUploaded[index] = loaded;
+                    const percentUploaded = Math.round((totalUploaded / totalSize) * 100);
+                    progressBarInner.style.width = `${percentUploaded}%`;
+                    statusElement.textContent = `In progress...`;
+                    percentText.textContent = `${percentUploaded}%`;
+                }
+            };
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve(xhr.response);
+                } else {
+                    reject(new Error(`Upload failed for ${file.name} with status: ${xhr.status}`));
+                }
+            };
+            xhr.onerror = () => reject(new Error(`Network error during upload for ${file.name}.`));
+            xhr.send(file);
+        });
+    });
+
+    return Promise.all(uploadPromises).then(() => {
+        statusElement.textContent = "Completed";
+        percentText.textContent = "100%";
+        statusElement.style.color = "green";
+    }).catch(err => {
+        statusElement.textContent = `Error: ${err.message}`;
+        percentText.textContent = "";
+        statusElement.style.color = "red";
+        throw err;
     });
 }; 

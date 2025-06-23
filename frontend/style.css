@@ -43,6 +43,55 @@ input[type="text"][disabled] {
     cursor: not-allowed;
 }
 
+.upload-mode {
+    margin-top: 20px;
+    margin-bottom: 15px;
+    display: flex;
+    gap: 20px;
+}
+
+#multi-video-container .sortable-list {
+    list-style-type: none;
+    padding: 0;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    min-height: 40px;
+}
+
+#multi-video-container .sortable-list li {
+    padding: 10px;
+    background-color: #f9f9f9;
+    border-bottom: 1px solid #ddd;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: grab;
+}
+
+#multi-video-container .sortable-list li:last-child {
+    border-bottom: none;
+}
+
+#multi-video-container .empty-list-message {
+    text-align: center;
+    color: #888;
+    padding: 10px;
+}
+
+#multi-video-container .remove-video-btn {
+    background: none;
+    border: none;
+    color: red;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 5px;
+}
+
+.percent-text {
+    font-weight: bold;
+    margin-left: 8px;
+    color: #1877f2;
+}
 
 button {
     width: 100%;

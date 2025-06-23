@@ -15,29 +15,49 @@
         <label for="folderName">Folder Name:</label>
         <input type="text" id="folderName" name="folderName" disabled>
 
-        <label for="zipFile">Zip File:</label>
+        <label for="zipFile">Optional Zip File:</label>
         <input type="file" id="zipFile" name="zipFile" accept=".zip">
 
-        <label for="videoFile">Video File:</label>
-        <input type="file" id="videoFile" name="videoFile" accept="video/*">
+        <div class="upload-mode">
+            <label><input type="radio" name="video-mode" value="single" checked> Upload Single Video</label>
+            <label><input type="radio" name="video-mode" value="multiple"> Concatenate Multiple Videos</label>
+        </div>
+
+        <!-- Container for single video upload -->
+        <div id="single-video-container">
+            <label for="videoFile">Video File:</label>
+            <input type="file" id="videoFile" name="videoFile" accept="video/*">
+        </div>
+
+        <!-- Container for multiple video upload -->
+        <div id="multi-video-container" style="display: none;">
+            <label for="addVideoFile">Add a video to the list:</label>
+            <input type="file" id="addVideoFile" name="addVideoFile" accept="video/*" style="margin-bottom: 10px;">
+            
+            <p>Your videos (drag to reorder):</p>
+            <ul id="video-file-list" class="sortable-list"></ul>
+            <p class="empty-list-message">No videos added yet.</p>
+        </div>
 
         <button id="uploadButton">Upload</button>
     </div>
     <div id="progress-container">
         <h2>Upload Progress</h2>
         <div id="zip-progress">
-            <p>Zip File: <span class="status">Not started</span></p>
+            <p>Zip File: <span class="status">Not started</span><span class="percent-text"></span></p>
             <div class="progress-bar">
                 <div class="progress-bar-inner"></div>
             </div>
         </div>
         <div id="video-progress">
-            <p>Video File: <span class="status">Not started</span></p>
+            <p>Video Upload: <span class="status">Not started</span><span class="percent-text"></span></p>
             <div class="progress-bar">
                 <div class="progress-bar-inner"></div>
             </div>
         </div>
     </div>
+    <!-- For drag-and-drop reordering. Loaded here to ensure it's available for script.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <script src="script.js"></script>
 </body>
 </html> 

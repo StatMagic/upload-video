@@ -48,40 +48,57 @@ export const handler = async (event) => {
     try {
         const body = JSON.parse(event.body || '{}');
         console.log("Parsed request body:", body);
-        const { gameName, folderName, zipFileType = 'application/zip', videoFileType = 'video/mp4' } = body;
+        const { gameName, folderName, zipFileType, videos } = body;
 
         if (!gameName || !folderName) {
             throw new Error("Missing 'gameName' or 'folderName' in request body");
         }
 
+        if (!videos || !Array.isArray(videos) || videos.length === 0) {
+            throw new Error("Missing 'videos' array in request body");
+        }
+
         const s3Client = new S3Client({ region });
+        const responseBody = {};
+        const uploadSessionId = `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
+        responseBody.uploadSessionId = uploadSessionId;
 
-        // Define S3 keys
-        const zipKey = `${folderName}/${gameName}.zip`;
-        const videoExtension = videoFileType.split('/')[1] || 'mp4';
-        const videoKey = `${folderName}/${gameName}.${videoExtension}`;
-        console.log(`Generating URLs for keys: ${zipKey}, ${videoKey}`);
+        // --- Video URL Generation ---
+        const videoUploadUrlPromises = videos.map((video, index) => {
+            const videoExtension = video.videoFileType.split('/')[1] || 'mp4';
+            let videoKey;
 
-        // Create commands for the S3 client
-        const zipCommand = new PutObjectCommand({
-            Bucket: bucketName,
-            Key: zipKey,
-            ContentType: zipFileType,
+            // If there's only one video, put it in the final destination.
+            // Otherwise, put parts in a temporary directory for concatenation.
+            if (videos.length === 1) {
+                videoKey = `${folderName}/Game Video/${gameName}.${videoExtension}`;
+            } else {
+                videoKey = `tmp-uploads/${uploadSessionId}/part-${index + 1}.${videoExtension}`;
+            }
+
+            const videoCommand = new PutObjectCommand({
+                Bucket: bucketName,
+                Key: videoKey,
+                ContentType: video.videoFileType,
+            });
+            return getSignedUrl(s3Client, videoCommand, { expiresIn: 3600 });
         });
-        const videoCommand = new PutObjectCommand({
-            Bucket: bucketName,
-            Key: videoKey,
-            ContentType: videoFileType,
-        });
-
-        // Generate pre-signed URLs
-        const [zipUploadUrl, videoUploadUrl] = await Promise.all([
-            getSignedUrl(s3Client, zipCommand, { expiresIn: 3600 }),
-            getSignedUrl(s3Client, videoCommand, { expiresIn: 3600 })
-        ]);
         
-        console.log("Successfully generated pre-signed URLs.");
-        const responseBody = { zipUploadUrl, zipKey, videoUploadUrl, videoKey };
+        responseBody.videoUploadUrls = await Promise.all(videoUploadUrlPromises);
+
+        // --- Zip URL Generation (Conditional) ---
+        if (zipFileType) {
+            const zipKey = `${folderName}/Zip File/${gameName}.zip`;
+            responseBody.zipKey = zipKey;
+            const zipCommand = new PutObjectCommand({
+                Bucket: bucketName,
+                Key: zipKey,
+                ContentType: zipFileType,
+            });
+            responseBody.zipUploadUrl = await getSignedUrl(s3Client, zipCommand, { expiresIn: 3600 });
+        }
+
+        console.log("Successfully generated pre-signed URLs:", responseBody);
 
         return {
             statusCode: 200,
