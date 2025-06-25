@@ -1,6 +1,6 @@
-// PLEASE CONFIGURE THIS WITH THE URL OF YOUR API GATEWAY ENDPOINT
+// --- CONFIGURATION ---
 const API_GATEWAY_URL = "https://quf9mii5ia.execute-api.ap-south-1.amazonaws.com/default/uploadVideo";
-const CONCATENATE_API_URL = "https://tw60zlvgf3.execute-api.ap-south-1.amazonaws.com/default/concatenateVideos"; // <-- NEW: CONFIGURE THIS
+const CONCATENATE_API_URL = "https://tw60zlvgf3.execute-api.ap-south-1.amazonaws.com/default/concatenateVideos";
 
 // --- STATE ---
 let videoFiles = []; // Array to hold File objects for the multi-upload list
@@ -10,8 +10,7 @@ const gameNameInput = document.getElementById("gameName");
 const folderNameInput = document.getElementById("folderName");
 const zipFileInput = document.getElementById("zipFile");
 const uploadButton = document.getElementById("uploadButton");
-const zipProgress = document.getElementById("zip-progress");
-const videoProgress = document.getElementById("video-progress");
+const progressContainer = document.getElementById("progress-container");
 
 // Mode selection
 const singleVideoContainer = document.getElementById("single-video-container");
@@ -35,10 +34,10 @@ copyS3LinkButton.addEventListener('click', () => {
     const linkToCopy = s3FolderLink.href;
     navigator.clipboard.writeText(linkToCopy).then(() => {
         // Provide user feedback
-        const originalContent = copyS3LinkButton.innerHTML;
+        const originalContent = copyS3LinkButton.textContent;
         copyS3LinkButton.textContent = 'Copied!';
         setTimeout(() => {
-            copyS3LinkButton.innerHTML = originalContent;
+            copyS3LinkButton.textContent = 'Copy Link';
         }, 2000); // Revert after 2 seconds
     }).catch(err => {
         console.error('Failed to copy link: ', err);
@@ -72,110 +71,68 @@ addVideoFileInput.addEventListener('change', () => {
 // Main upload button click handler
 uploadButton.addEventListener("click", async () => {
     const gameName = gameNameInput.value.trim();
-    const folderName = folderNameInput.value;
+    const finalS3Folder = folderNameInput.value;
     const zipFile = zipFileInput.files[0];
     const uploadMode = document.querySelector('input[name="video-mode"]:checked').value;
 
     let finalVideoFiles = [];
     if (uploadMode === 'single') {
-        if (singleVideoInput.files[0]) {
-            finalVideoFiles.push(singleVideoInput.files[0]);
-        }
+        if (singleVideoInput.files[0]) finalVideoFiles.push(singleVideoInput.files[0]);
     } else {
         finalVideoFiles = videoFiles;
     }
     
     // --- VALIDATION ---
-    if (!gameName) {
-        alert("Please enter a game name.");
-        return;
-    }
-    if (!zipFile && finalVideoFiles.length === 0) {
-        alert("Please select a zip file or at least one video file.");
-        return;
-    }
-    if (finalVideoFiles.length === 0) {
-        alert("Please select at least one video file.");
-        return;
-    }
-    if (!API_GATEWAY_URL || API_GATEWAY_URL === "YOUR_API_GATEWAY_URL") {
-        alert("Please configure the API_GATEWAY_URL in script.js");
-        return;
-    }
+    if (!gameName) return alert("Please enter a game name.");
+    
+    const allFilesToUpload = [...finalVideoFiles];
+    if (zipFile) allFilesToUpload.unshift(zipFile); 
+
+    if (allFilesToUpload.length === 0) return alert("Please select at least one file to upload.");
+    if (!API_GATEWAY_URL) return alert("Please configure the API_GATEWAY_URL in script.js");
 
     // --- RESET UI ---
-    resetProgress(zipProgress);
-    resetProgress(videoProgress);
-    resultContainer.style.display = 'none'; // Hide result link
+    progressContainer.innerHTML = '<h2>Upload Progress</h2>'; 
+    resultContainer.style.display = 'none';
     uploadButton.disabled = true;
-    uploadButton.textContent = "Getting upload URLs...";
-
-    // --- API PAYLOAD PREPARATION ---
+    
     try {
-        const videoPayload = finalVideoFiles.map(file => ({ videoFileType: file.type }));
-        const payload = {
-            gameName,
-            folderName,
-            videos: videoPayload,
-        };
-        if (zipFile) {
-            payload.zipFileType = zipFile.type;
-        }
+        uploadButton.textContent = "Initializing Upload...";
+        const config = await callBackend('initialize-upload');
 
-        // --- API CALL ---
-        const response = await fetch(API_GATEWAY_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || `Server error: ${response.status}`);
-        }
-
-        const { zipUploadUrl, videoUploadUrls, uploadSessionId, bucket, folder, region } = await response.json();
-        uploadButton.textContent = "Uploading...";
+        const uploadSessionId = `upload-${Date.now()}`;
         
         // --- UPLOAD EXECUTION ---
-        const uploadPromises = [];
-        if (zipFile && zipUploadUrl) {
-            uploadPromises.push(uploadFile(zipFile, zipUploadUrl, zipProgress));
-        }
-
-        if (finalVideoFiles.length > 0 && videoUploadUrls && videoUploadUrls.length > 0) {
-            const videoUploadPromise = uploadVideos(finalVideoFiles, videoUploadUrls, videoProgress);
-            uploadPromises.push(videoUploadPromise);
-        }
+        uploadButton.textContent = "Uploading...";
+        const uploader = new S3MultipartUploader(allFilesToUpload, {
+            finalS3Folder,
+            uploadSessionId,
+            progressContainer
+        });
+        await uploader.upload();
         
-        await Promise.all(uploadPromises);
-        
-        let finalBucket = bucket;
-        let finalFolder = folder;
-        let finalRegion = region;
-
-        // --- CONCATENATION TRIGGER ---
+        // --- FINALIZE UPLOAD ---
         if (uploadMode === 'multiple' && finalVideoFiles.length > 1) {
+            // Trigger concatenation for multiple videos
             uploadButton.textContent = "Processing...";
-            const videoStatus = videoProgress.querySelector('.status');
-            const videoPercent = videoProgress.querySelector('.percent-text');
-            videoStatus.textContent = 'Uploads complete.';
-            videoPercent.textContent = 'Now processing...';
+            const concatData = await triggerConcatenation(uploadSessionId, finalS3Folder, gameName);
+            console.log("Concatenation complete:", concatData);
+            displayS3Link(concatData.bucket, concatData.folder, concatData.region);
+        } else if (finalVideoFiles.length === 1) {
+            // Move the single video from temp to final destination
+            uploadButton.textContent = "Finalizing...";
+            const videoFile = finalVideoFiles[0];
+            const sourceKey = `tmp-uploads/${uploadSessionId}/${videoFile.name}`;
+            const destinationKey = `${finalS3Folder}/Game Video/${gameName}.${videoFile.name.split('.').pop()}`;
             
-            const concatData = await triggerConcatenation(uploadSessionId, folderName, gameName);
-            finalBucket = concatData.bucket;
-            finalFolder = concatData.folder;
-            finalRegion = concatData.region;
-
-            videoStatus.textContent = 'Processing complete!';
-            videoPercent.textContent = '✅';
-            videoStatus.style.color = "green";
+            await callBackend('finalize-upload', { sourceKey, destinationKey });
+            displayS3Link(config.bucket, finalS3Folder, config.region);
+        } else {
+            // This case handles zip-only uploads
+            displayS3Link(config.bucket, finalS3Folder, config.region);
         }
 
         uploadButton.textContent = "Done!";
-
-        // --- DISPLAY S3 FOLDER LINK ---
-        displayS3Link(finalBucket, finalFolder, finalRegion);
 
     } catch (err) {
         console.error("Upload process failed:", err);
@@ -184,6 +141,138 @@ uploadButton.addEventListener("click", async () => {
         uploadButton.textContent = "Upload";
     }
 });
+
+// --- BACKEND COMMUNICATION ---
+async function callBackend(action, params) {
+    const response = await fetch(API_GATEWAY_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, ...params })
+    });
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(`Backend Error: ${err.error || response.statusText}`);
+    }
+    return response.json();
+}
+
+// --- S3 MULTIPART UPLOADER CLASS ---
+
+class S3MultipartUploader {
+    constructor(files, options) {
+        this.files = files;
+        this.options = options;
+        this.chunkSize = 10 * 1024 * 1024; // 10MB
+        this.threads = 4;
+    }
+
+    async upload() {
+        const allPromises = this.files.map(file => this.uploadFile(file));
+        return Promise.all(allPromises);
+    }
+
+    async uploadFile(file) {
+        const progressElement = this.createProgressElement(file.name);
+        this.options.progressContainer.appendChild(progressElement);
+        
+        const s3Key = file.type.startsWith('video/')
+            ? `tmp-uploads/${this.options.uploadSessionId}/${file.name}`
+            : `${this.options.finalS3Folder}/Zip File/${file.name}`;
+
+        try {
+            if (file.size < this.chunkSize) {
+                await this.uploadSingle(file, s3Key, progressElement);
+            } else {
+                await this.uploadMultipart(file, s3Key, progressElement);
+            }
+            this.updateProgress(progressElement, 1, 'Complete');
+        } catch (error) {
+            console.error(`Upload failed for ${file.name}:`, error);
+            this.updateProgress(progressElement, 1, `Error: ${error.message}`);
+            throw error; // Re-throw to fail the Promise.all
+        }
+    }
+
+    async uploadSingle(file, key, progressElement) {
+        const { url } = await callBackend('get-presigned-put-url', { key });
+        await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("PUT", url, true);
+            xhr.setRequestHeader('Content-Type', file.type);
+            xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) this.updateProgress(progressElement, event.loaded / event.total);
+            };
+            xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve() : reject(new Error(`HTTP ${xhr.status}`));
+            xhr.onerror = () => reject(new Error('Network error.'));
+            xhr.send(file);
+        });
+    }
+
+    async uploadMultipart(file, key, progressElement) {
+        const { uploadId } = await callBackend('create-multipart-upload', { key });
+
+        const totalChunks = Math.ceil(file.size / this.chunkSize);
+        const { urls } = await callBackend('get-presigned-part-urls', { key, uploadId, partCount: totalChunks });
+
+        let uploadedPartsCount = 0;
+        const partUploadPromises = urls.map((url, index) => {
+            const partNumber = index + 1;
+            const start = index * this.chunkSize;
+            const end = Math.min(start + this.chunkSize, file.size);
+            const chunk = file.slice(start, end);
+            
+            return this.uploadPart(url, chunk).then(etag => {
+                uploadedPartsCount++;
+                this.updateProgress(progressElement, uploadedPartsCount / totalChunks);
+                return { ETag: etag, PartNumber: partNumber };
+            });
+        });
+
+        const parts = await Promise.all(partUploadPromises);
+        parts.sort((a, b) => a.PartNumber - b.PartNumber);
+
+        await callBackend('complete-multipart-upload', { key, uploadId, parts });
+    }
+
+    async uploadPart(url, chunk) {
+        const response = await fetch(url, { method: 'PUT', body: chunk });
+        if (!response.ok) throw new Error(`Part upload failed: ${response.status}`);
+        const etag = response.headers.get('ETag');
+        if (!etag) throw new Error('ETag not found in part upload response.');
+        return etag;
+    }
+    
+    createProgressElement(fileName) {
+        const element = document.createElement('div');
+        element.classList.add('progress-item');
+        element.innerHTML = `
+            <p>${fileName}: <span class="status">Starting...</span><span class="percent-text"></span></p>
+            <div class="progress-bar">
+                <div class="progress-bar-inner"></div>
+            </div>
+        `;
+        return element;
+    }
+    
+    updateProgress(element, fraction, statusText = null) {
+        const progressBarInner = element.querySelector(".progress-bar-inner");
+        const percentText = element.querySelector(".percent-text");
+        const statusElement = element.querySelector(".status");
+        
+        const percent = Math.round(fraction * 100);
+        progressBarInner.style.width = `${percent}%`;
+        percentText.textContent = ` ${percent}%`;
+        
+        if (statusText) {
+            statusElement.textContent = statusText;
+        } else if (fraction < 1) {
+            statusElement.textContent = 'Uploading...';
+        } else {
+            statusElement.textContent = 'Processing...';
+            statusElement.style.color = "#4CAF50";
+        }
+    }
+}
 
 
 // --- HELPER FUNCTIONS ---
@@ -215,6 +304,8 @@ const triggerConcatenation = async (uploadSessionId, folderName, gameName) => {
     console.log("Concatenation process started successfully.");
     return response.json();
 };
+
+// --- RENDER AND UI ---
 
 // Display the final S3 link
 const displayS3Link = (bucket, folder, region) => {
@@ -282,121 +373,4 @@ new Sortable(videoFileList, {
         videoFiles.splice(evt.newIndex, 0, movedItem);
         renderVideoList(); // Re-render to update indexes
     }
-});
-
-const resetProgress = (progressElement) => {
-    const statusElement = progressElement.querySelector(".status");
-    const progressBarInner = progressElement.querySelector(".progress-bar-inner");
-    const percentText = progressElement.querySelector(".percent-text");
-
-    statusElement.textContent = "Not started";
-    statusElement.style.color = '';
-    progressBarInner.style.width = "0%";
-    percentText.textContent = "";
-};
-
-// Upload a single file (used for the zip)
-const uploadFile = (file, url, progressElement) => {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open("PUT", url, true);
-        xhr.setRequestHeader('Content-Type', file.type);
-
-        const statusElement = progressElement.querySelector(".status");
-        const progressBarInner = progressElement.querySelector(".progress-bar-inner");
-        const percentText = progressElement.querySelector(".percent-text");
-
-        xhr.upload.onprogress = (event) => {
-            if (event.lengthComputable) {
-                const percentUploaded = Math.round((event.loaded / event.total) * 100);
-                progressBarInner.style.width = `${percentUploaded}%`;
-                statusElement.textContent = `In progress...`;
-                percentText.textContent = `${percentUploaded}%`;
-            }
-        };
-
-        xhr.onload = () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-                statusElement.textContent = "Completed";
-                percentText.textContent = `100%`;
-                statusElement.style.color = "green";
-                resolve(xhr.response);
-            } else {
-                statusElement.textContent = `Error: Upload failed (status ${xhr.status})`;
-                percentText.textContent = "";
-                statusElement.style.color = "red";
-                reject(new Error(`Upload failed with status: ${xhr.status} - ${xhr.statusText}`));
-            }
-        };
-
-        xhr.onerror = () => {
-            statusElement.textContent = "Error: Network error during upload.";
-            percentText.textContent = "";
-            statusElement.style.color = "red";
-            reject(new Error("Network error during upload."));
-        };
-
-        statusElement.textContent = "Starting...";
-        percentText.textContent = "";
-        progressBarInner.style.width = "0%";
-        xhr.send(file);
-    });
-};
-
-// Upload multiple videos and track combined progress
-const uploadVideos = (files, urls, progressElement) => {
-    const totalSize = files.reduce((acc, file) => acc + file.size, 0);
-    let totalUploaded = 0;
-    let fileUploaded = new Array(files.length).fill(0);
-
-    const statusElement = progressElement.querySelector(".status");
-    const progressBarInner = progressElement.querySelector(".progress-bar-inner");
-    const progressLabel = progressElement.querySelector("p");
-    const percentText = progressElement.querySelector(".percent-text");
-
-    // Update the label text without destroying the child spans
-    progressLabel.childNodes[0].nodeValue = files.length > 1 ? 'Combined Video: ' : 'Video Upload: ';
-    statusElement.textContent = "Starting...";
-    percentText.textContent = "";
-
-    const uploadPromises = files.map((file, index) => {
-        return new Promise((resolve, reject) => {
-            const xhr = new XMLHttpRequest();
-            xhr.open("PUT", urls[index], true);
-            xhr.setRequestHeader('Content-Type', file.type);
-            
-            xhr.upload.onprogress = (event) => {
-                if (event.lengthComputable) {
-                    const loaded = event.loaded;
-                    totalUploaded += loaded - fileUploaded[index];
-                    fileUploaded[index] = loaded;
-                    const percentUploaded = Math.round((totalUploaded / totalSize) * 100);
-                    progressBarInner.style.width = `${percentUploaded}%`;
-                    statusElement.textContent = `In progress...`;
-                    percentText.textContent = `${percentUploaded}%`;
-                }
-            };
-
-            xhr.onload = () => {
-                if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve(xhr.response);
-                } else {
-                    reject(new Error(`Upload failed for ${file.name} with status: ${xhr.status}`));
-                }
-            };
-            xhr.onerror = () => reject(new Error(`Network error during upload for ${file.name}.`));
-            xhr.send(file);
-        });
-    });
-
-    return Promise.all(uploadPromises).then(() => {
-        statusElement.textContent = "Completed";
-        percentText.textContent = "100%";
-        statusElement.style.color = "green";
-    }).catch(err => {
-        statusElement.textContent = `Error: ${err.message}`;
-        percentText.textContent = "";
-        statusElement.style.color = "red";
-        throw err;
-    });
-}; 
+}); 

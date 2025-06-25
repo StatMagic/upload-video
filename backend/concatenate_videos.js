@@ -14,7 +14,7 @@ export const handler = async (event) => {
     console.log("Received event:", JSON.stringify(event, null, 2));
 
     const bucketName = process.env.S3_BUCKET_NAME;
-    const region = process.env.AWS_REGION || 'us-east-1';
+    const region = process.env.AWS_REGION;
 
     const headers = {
         "Access-Control-Allow-Origin": "*",

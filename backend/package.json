@@ -1,0 +1,15 @@
+{
+  "name": "s3-uploader-backend",
+  "version": "1.0.0",
+  "description": "Backend for S3 uploader",
+  "main": "lambda_function.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@paralleldrive/cuid2": "^2.2.2"
+  }
+} 
