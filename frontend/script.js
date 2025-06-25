@@ -23,7 +23,28 @@ const emptyListMessage = document.querySelector("#multi-video-container .empty-l
 // Single-file input (for single video mode)
 const singleVideoInput = document.getElementById("videoFile");
 
+// Result link
+const resultContainer = document.getElementById("result-container");
+const s3FolderLink = document.getElementById("s3-folder-link");
+const copyS3LinkButton = document.getElementById("copy-s3-link-button");
+
 // --- EVENT LISTENERS ---
+
+// Copy S3 link to clipboard
+copyS3LinkButton.addEventListener('click', () => {
+    const linkToCopy = s3FolderLink.href;
+    navigator.clipboard.writeText(linkToCopy).then(() => {
+        // Provide user feedback
+        const originalContent = copyS3LinkButton.innerHTML;
+        copyS3LinkButton.textContent = 'Copied!';
+        setTimeout(() => {
+            copyS3LinkButton.innerHTML = originalContent;
+        }, 2000); // Revert after 2 seconds
+    }).catch(err => {
+        console.error('Failed to copy link: ', err);
+        alert('Failed to copy link. Please copy it manually.');
+    });
+});
 
 // Switch between single and multi-video upload modes
 document.querySelectorAll('input[name="video-mode"]').forEach(radio => {
@@ -85,6 +106,7 @@ uploadButton.addEventListener("click", async () => {
     // --- RESET UI ---
     resetProgress(zipProgress);
     resetProgress(videoProgress);
+    resultContainer.style.display = 'none'; // Hide result link
     uploadButton.disabled = true;
     uploadButton.textContent = "Getting upload URLs...";
 
@@ -112,7 +134,7 @@ uploadButton.addEventListener("click", async () => {
             throw new Error(errorData.error || `Server error: ${response.status}`);
         }
 
-        const { zipUploadUrl, videoUploadUrls, uploadSessionId } = await response.json();
+        const { zipUploadUrl, videoUploadUrls, uploadSessionId, bucket, folder, region } = await response.json();
         uploadButton.textContent = "Uploading...";
         
         // --- UPLOAD EXECUTION ---
@@ -128,6 +150,10 @@ uploadButton.addEventListener("click", async () => {
         
         await Promise.all(uploadPromises);
         
+        let finalBucket = bucket;
+        let finalFolder = folder;
+        let finalRegion = region;
+
         // --- CONCATENATION TRIGGER ---
         if (uploadMode === 'multiple' && finalVideoFiles.length > 1) {
             uploadButton.textContent = "Processing...";
@@ -136,14 +162,20 @@ uploadButton.addEventListener("click", async () => {
             videoStatus.textContent = 'Uploads complete.';
             videoPercent.textContent = 'Now processing...';
             
-            await triggerConcatenation(uploadSessionId, folderName, gameName);
-            
+            const concatData = await triggerConcatenation(uploadSessionId, folderName, gameName);
+            finalBucket = concatData.bucket;
+            finalFolder = concatData.folder;
+            finalRegion = concatData.region;
+
             videoStatus.textContent = 'Processing complete!';
             videoPercent.textContent = '✅';
             videoStatus.style.color = "green";
         }
 
         uploadButton.textContent = "Done!";
+
+        // --- DISPLAY S3 FOLDER LINK ---
+        displayS3Link(finalBucket, finalFolder, finalRegion);
 
     } catch (err) {
         console.error("Upload process failed:", err);
@@ -182,6 +214,17 @@ const triggerConcatenation = async (uploadSessionId, folderName, gameName) => {
 
     console.log("Concatenation process started successfully.");
     return response.json();
+};
+
+// Display the final S3 link
+const displayS3Link = (bucket, folder, region) => {
+    if (!bucket || !folder || !region) {
+        console.warn("Could not display S3 link because bucket, folder, or region was missing.");
+        return;
+    }
+    const url = `https://s3.console.aws.amazon.com/s3/buckets/${bucket}?region=${region}&prefix=${folder}/`;
+    s3FolderLink.href = url;
+    resultContainer.style.display = 'block';
 };
 
 // Update folder name based on game name

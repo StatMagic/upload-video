@@ -109,7 +109,13 @@ export const handler = async (event) => {
             return {
                 statusCode: 200,
                 headers,
-                body: JSON.stringify({ message: "Concatenation successful!", finalVideoKey }),
+                body: JSON.stringify({ 
+                    message: "Concatenation successful!", 
+                    finalVideoKey,
+                    bucket: bucketName,
+                    folder: folderName,
+                    region: region
+                }),
             };
         } finally {
             // 6. GUARANTEED: Clean up local /tmp files

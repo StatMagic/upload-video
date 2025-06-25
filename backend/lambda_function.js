@@ -63,6 +63,11 @@ export const handler = async (event) => {
         const uploadSessionId = `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
         responseBody.uploadSessionId = uploadSessionId;
 
+        // Add bucket, folder, and region to the response
+        responseBody.bucket = bucketName;
+        responseBody.folder = folderName;
+        responseBody.region = region;
+
         // --- Video URL Generation ---
         const videoUploadUrlPromises = videos.map((video, index) => {
             const videoExtension = video.videoFileType.split('/')[1] || 'mp4';

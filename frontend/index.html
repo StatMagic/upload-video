@@ -56,6 +56,16 @@
             </div>
         </div>
     </div>
+    <div id="result-container" style="display: none;">
+        <h2>Upload Complete</h2>
+        <p>Your files are in the S3 bucket. You can view the folder here:</p>
+        <div class="result-link-container">
+            <a id="s3-folder-link" href="#" target="_blank" rel="noopener noreferrer">View Folder in AWS S3 Console</a>
+            <button id="copy-s3-link-button" class="copy-button" title="Copy link to clipboard">
+                Copy Link
+            </button>
+        </div>
+    </div>
     <!-- For drag-and-drop reordering. Loaded here to ensure it's available for script.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
     <script src="script.js"></script>
