@@ -40,30 +40,21 @@ export const handler = async (event) => {
     
     try {
         const body = JSON.parse(event.body || '{}');
-        console.log("Parsed request body:", JSON.stringify(body, null, 2));
-
-        const { action, key } = body;
-        console.log(`Received action: '${action}'`);
+        const { action, key, uploadId, partCount, parts } = body;
 
         let response;
         switch (action) {
-            case 'initialize-upload':
-                response = { bucket: BUCKET_NAME, region: REGION };
-                break;
-            case 'finalize-upload':
-                response = await finalizeUpload(body.sourceKey, body.destinationKey);
-                break;
             case 'create-multipart-upload':
                 response = await createMultipartUpload(key);
                 break;
             case 'get-presigned-part-urls':
-                response = await getPresignedPartUrls(key, body.uploadId, body.partCount);
+                response = await getPresignedPartUrls(key, uploadId, partCount);
                 break;
             case 'complete-multipart-upload':
-                response = await completeMultipartUpload(key, body.uploadId, body.parts);
+                response = await completeMultipartUpload(key, uploadId, parts);
                 break;
             case 'abort-multipart-upload':
-                response = await abortMultipartUpload(key, body.uploadId);
+                response = await abortMultipartUpload(key, uploadId);
                 break;
             case 'get-presigned-put-url':
                 response = await getPresignedPutUrl(key);

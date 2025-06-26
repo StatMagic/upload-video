@@ -95,41 +95,33 @@ uploadButton.addEventListener("click", async () => {
     progressContainer.innerHTML = '<h2>Upload Progress</h2>'; 
     resultContainer.style.display = 'none';
     uploadButton.disabled = true;
+    uploadButton.textContent = "Uploading...";
     
     try {
-        uploadButton.textContent = "Initializing Upload...";
-        const config = await callBackend('initialize-upload');
-
         const uploadSessionId = `upload-${Date.now()}`;
-        
+        const isSingleVideo = uploadMode === 'single' && finalVideoFiles.length === 1;
+        const sanitizedGameName = gameName.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '');
+
         // --- UPLOAD EXECUTION ---
-        uploadButton.textContent = "Uploading...";
         const uploader = new S3MultipartUploader(allFilesToUpload, {
+            gameName: sanitizedGameName,
             finalS3Folder,
             uploadSessionId,
+            isSingleVideo,
             progressContainer
         });
         await uploader.upload();
         
-        // --- FINALIZE UPLOAD ---
-        if (uploadMode === 'multiple' && finalVideoFiles.length > 1) {
-            // Trigger concatenation for multiple videos
+        // --- FINALIZE / CONCATENATE ---
+        if (!isSingleVideo && finalVideoFiles.length > 1) {
             uploadButton.textContent = "Processing...";
-            const concatData = await triggerConcatenation(uploadSessionId, finalS3Folder, gameName);
+            const concatData = await triggerConcatenation(uploadSessionId, finalS3Folder, sanitizedGameName);
             console.log("Concatenation complete:", concatData);
             displayS3Link(concatData.bucket, concatData.folder, concatData.region);
-        } else if (finalVideoFiles.length === 1) {
-            // Move the single video from temp to final destination
-            uploadButton.textContent = "Finalizing...";
-            const videoFile = finalVideoFiles[0];
-            const sourceKey = `tmp-uploads/${uploadSessionId}/${videoFile.name}`;
-            const destinationKey = `${finalS3Folder}/Game Video/${gameName}.${videoFile.name.split('.').pop()}`;
-            
-            await callBackend('finalize-upload', { sourceKey, destinationKey });
-            displayS3Link(config.bucket, finalS3Folder, config.region);
         } else {
-            // This case handles zip-only uploads
-            displayS3Link(config.bucket, finalS3Folder, config.region);
+            // For single videos and zips, the upload is already in its final location.
+            // We need a way to get bucket/region info. Let's hardcode for now as a fallback.
+            displayS3Link("playernation-games", finalS3Folder, "ap-south-1");
         }
 
         uploadButton.textContent = "Done!";
@@ -175,9 +167,19 @@ class S3MultipartUploader {
         const progressElement = this.createProgressElement(file.name);
         this.options.progressContainer.appendChild(progressElement);
         
-        const s3Key = file.type.startsWith('video/')
-            ? `tmp-uploads/${this.options.uploadSessionId}/${file.name}`
-            : `${this.options.finalS3Folder}/Zip File/${file.name}`;
+        let s3Key;
+        if (file.type.startsWith('video/')) {
+            if (this.options.isSingleVideo) {
+                // Upload directly to final destination
+                s3Key = `${this.options.finalS3Folder}/Game Video/${this.options.gameName}.${file.name.split('.').pop()}`;
+            } else {
+                // Use temp folder for multi-video concatenation
+                s3Key = `tmp-uploads/${this.options.uploadSessionId}/${file.name}`;
+            }
+        } else {
+            // Handle zip files
+            s3Key = `${this.options.finalS3Folder}/Zip File/${file.name}`;
+        }
 
         try {
             if (file.size < this.chunkSize) {
