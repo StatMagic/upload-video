@@ -4,11 +4,15 @@ const CONCATENATE_API_URL = "https://tw60zlvgf3.execute-api.ap-south-1.amazonaws
 
 // --- STATE ---
 let videoFiles = []; // Array to hold File objects for the multi-upload list
+let modifiedZipBlob = null; // To hold the newly generated zip file
+let zipDataCache = null; // To hold parsed zip data AND the raw zip content
+let currentZipFile = null; // To explicitly track the selected zip file
 
 // --- DOM ELEMENTS ---
 const gameNameInput = document.getElementById("gameName");
 const folderNameInput = document.getElementById("folderName");
 const zipFileInput = document.getElementById("zipFile");
+const zipFileNameDisplay = document.getElementById("zip-file-name");
 const uploadButton = document.getElementById("uploadButton");
 const progressContainer = document.getElementById("progress-container");
 
@@ -26,6 +30,15 @@ const singleVideoInput = document.getElementById("videoFile");
 const resultContainer = document.getElementById("result-container");
 const s3FolderLink = document.getElementById("s3-folder-link");
 const copyS3LinkButton = document.getElementById("copy-s3-link-button");
+
+// Modal elements
+const packagesModal = document.getElementById('packages-modal');
+const playerListContainer = document.getElementById('player-list-container');
+const savePackagesButton = document.getElementById('save-packages-button');
+const editPackagesButton = document.getElementById('edit-packages-button');
+const cancelPackagesButton = document.getElementById('cancel-packages-button');
+const closeModalButton = document.getElementById('close-modal-button');
+
 
 // --- EVENT LISTENERS ---
 
@@ -68,11 +81,73 @@ addVideoFileInput.addEventListener('change', () => {
     addVideoFileInput.value = ''; // Reset input
 });
 
+// Handle Zip file selection
+zipFileInput.addEventListener('change', async (event) => {
+    const newFile = event.target.files[0];
+
+    if (newFile) {
+        // A new file was selected.
+        currentZipFile = newFile;
+        zipFileNameDisplay.textContent = currentZipFile.name; // Update our custom display
+        resetZipState();
+        editPackagesButton.style.display = 'inline-block';
+    } else {
+        // No new file was selected (user hit cancel).
+        // Our `currentZipFile` variable preserves the state, and our custom
+        // `zipFileNameDisplay` continues to show the user what's selected.
+        // We don't need to do anything here.
+        console.log("File selection cancelled, preserving previous state.");
+    }
+});
+
+// Re-open the modal to edit packages
+editPackagesButton.addEventListener('click', async () => {
+    if (zipDataCache) {
+        // If cache exists, just show the modal
+        packagesModal.style.display = 'flex';
+        return;
+    }
+
+    // First time opening, process the file
+    if (!currentZipFile) {
+        alert("Please select a zip file first.");
+        return;
+    }
+
+    uploadButton.disabled = true;
+    uploadButton.textContent = "Processing Zip...";
+    
+    try {
+        const fileBuffer = await currentZipFile.arrayBuffer();
+        const zip = await JSZip.loadAsync(fileBuffer);
+        const playerCsvFile = zip.file("players.csv");
+
+        if (!playerCsvFile) throw new Error("`players.csv` not found in the zip file.");
+
+        const csvContent = await playerCsvFile.async("string");
+        const parseResult = Papa.parse(csvContent, { header: true, skipEmptyLines: true });
+        
+        if (!parseResult.data || parseResult.data.length === 0) throw new Error("`players.csv` is empty or invalid.");
+
+        zipDataCache = { players: parseResult.data, zip, rawBuffer: fileBuffer };
+        populateAndShowModal();
+
+    } catch (error) {
+        alert(`Error processing zip file: ${error.message}`);
+        resetZipState();
+    } finally {
+        uploadButton.disabled = false;
+        uploadButton.textContent = "Upload";
+    }
+});
+
+
 // Main upload button click handler
 uploadButton.addEventListener("click", async () => {
     const gameName = gameNameInput.value.trim();
     const finalS3Folder = folderNameInput.value;
-    const zipFile = zipFileInput.files[0];
+    // Use the modified zip blob if it exists, otherwise use the original file
+    const zipFile = modifiedZipBlob || currentZipFile;
     const uploadMode = document.querySelector('input[name="video-mode"]:checked').value;
 
     let finalVideoFiles = [];
@@ -81,22 +156,22 @@ uploadButton.addEventListener("click", async () => {
     } else {
         finalVideoFiles = videoFiles;
     }
-    
+
     // --- VALIDATION ---
     if (!gameName) return alert("Please enter a game name.");
-    
+
     const allFilesToUpload = [...finalVideoFiles];
-    if (zipFile) allFilesToUpload.unshift(zipFile); 
+    if (zipFile) allFilesToUpload.unshift(zipFile);
 
     if (allFilesToUpload.length === 0) return alert("Please select at least one file to upload.");
     if (!API_GATEWAY_URL) return alert("Please configure the API_GATEWAY_URL in script.js");
 
     // --- RESET UI ---
-    progressContainer.innerHTML = '<h2>Upload Progress</h2>'; 
+    progressContainer.innerHTML = '<h2>Upload Progress</h2>';
     resultContainer.style.display = 'none';
     uploadButton.disabled = true;
     uploadButton.textContent = "Uploading...";
-    
+
     try {
         const uploadSessionId = `upload-${Date.now()}`;
         const isSingleVideo = uploadMode === 'single' && finalVideoFiles.length === 1;
@@ -111,7 +186,7 @@ uploadButton.addEventListener("click", async () => {
             progressContainer
         });
         await uploader.upload();
-        
+
         // --- FINALIZE / CONCATENATE ---
         if (!isSingleVideo && finalVideoFiles.length > 1) {
             uploadButton.textContent = "Processing...";
@@ -159,12 +234,20 @@ class S3MultipartUploader {
     }
 
     async upload() {
-        const allPromises = this.files.map(file => this.uploadFile(file));
+        const allPromises = this.files.map(file => {
+            let displayName = file.name;
+            // If we're uploading a modified zip blob, which has no name,
+            // use the name of the original zip file for display purposes.
+            if (!displayName && file instanceof Blob && zipFileInput.files[0]) {
+                displayName = zipFileInput.files[0].name;
+            }
+            return this.uploadFile(file, displayName);
+        });
         return Promise.all(allPromises);
     }
 
-    async uploadFile(file) {
-        const progressElement = this.createProgressElement(file.name);
+    async uploadFile(file, displayName) {
+        const progressElement = this.createProgressElement(displayName || 'file');
         this.options.progressContainer.appendChild(progressElement);
         
         let s3Key;
@@ -176,9 +259,12 @@ class S3MultipartUploader {
                 // Use temp folder for multi-video concatenation
                 s3Key = `tmp-uploads/${this.options.uploadSessionId}/${file.name}`;
             }
+        } else if (file.type === 'application/zip' || file.name.endsWith('.zip')) {
+            // Standardize the zip file name upon upload
+            s3Key = `${this.options.finalS3Folder}/Zip File/Game Info - ${this.options.gameName}.zip`;
         } else {
-            // Handle zip files
-            s3Key = `${this.options.finalS3Folder}/Zip File/${file.name}`;
+            // Fallback for other file types, though currently not used.
+            s3Key = `${this.options.finalS3Folder}/Other/${file.name}`;
         }
 
         try {
@@ -222,7 +308,7 @@ class S3MultipartUploader {
             const start = index * this.chunkSize;
             const end = Math.min(start + this.chunkSize, file.size);
             const chunk = file.slice(start, end);
-            
+
             return this.uploadPart(url, chunk).then(etag => {
                 uploadedPartsCount++;
                 this.updateProgress(progressElement, uploadedPartsCount / totalChunks);
@@ -243,7 +329,7 @@ class S3MultipartUploader {
         if (!etag) throw new Error('ETag not found in part upload response.');
         return etag;
     }
-    
+
     createProgressElement(fileName) {
         const element = document.createElement('div');
         element.classList.add('progress-item');
@@ -255,16 +341,16 @@ class S3MultipartUploader {
         `;
         return element;
     }
-    
+
     updateProgress(element, fraction, statusText = null) {
         const progressBarInner = element.querySelector(".progress-bar-inner");
         const percentText = element.querySelector(".percent-text");
         const statusElement = element.querySelector(".status");
-        
+
         const percent = Math.round(fraction * 100);
         progressBarInner.style.width = `${percent}%`;
         percentText.textContent = ` ${percent}%`;
-        
+
         if (statusText) {
             statusElement.textContent = statusText;
         } else if (fraction < 1) {
@@ -375,4 +461,113 @@ new Sortable(videoFileList, {
         videoFiles.splice(evt.newIndex, 0, movedItem);
         renderVideoList(); // Re-render to update indexes
     }
-}); 
+});
+
+// --- MODAL AND ZIP HANDLING ---
+
+function populateAndShowModal() {
+    if (!zipDataCache) return;
+
+    playerListContainer.innerHTML = ''; // Clear previous content
+
+    // Group players by team
+    const playersByTeam = zipDataCache.players.reduce((acc, player) => {
+        const teamName = player.team_name || 'No Team Assigned';
+        if (!acc[teamName]) {
+            acc[teamName] = [];
+        }
+        acc[teamName].push(player);
+        return acc;
+    }, {});
+
+    // Render the grouped list
+    for (const teamName in playersByTeam) {
+        const teamGroup = document.createElement('div');
+        teamGroup.classList.add('team-group');
+        teamGroup.innerHTML = `<h3>${teamName}</h3>`;
+
+        playersByTeam[teamName].forEach(player => {
+            const playerName = player.player_name || 'Unknown Player';
+            const existingPackage = player.PACKAGE_SELECTION || 'none';
+            // Use player object itself to find index later, avoiding simple index issues
+            const originalIndex = zipDataCache.players.indexOf(player);
+
+            const row = document.createElement('div');
+            row.classList.add('player-row');
+            row.dataset.index = originalIndex;
+
+            row.innerHTML = `
+                <div class="player-info">
+                    <span class="player-name">${playerName}</span>
+                </div>
+                <div class="package-options">
+                    <select>
+                        <option value="none" ${existingPackage === 'none' ? 'selected' : ''}>None</option>
+                        <option value="stat" ${existingPackage === 'stat' ? 'selected' : ''}>Stat Package</option>
+                        <option value="highlight" ${existingPackage === 'highlight' ? 'selected' : ''}>Highlight Package</option>
+                        <option value="both" ${existingPackage === 'both' ? 'selected' : ''}>Both Packages</option>
+                    </select>
+                </div>
+            `;
+            teamGroup.appendChild(row);
+        });
+        playerListContainer.appendChild(teamGroup);
+    }
+
+    packagesModal.style.display = 'flex';
+
+    // Attach event listeners for modal buttons
+    savePackagesButton.onclick = () => handleSavePackages();
+    cancelPackagesButton.onclick = () => closeModal();
+}
+
+function closeModal() {
+    packagesModal.style.display = 'none';
+    // This now does nothing but close the modal. State is preserved.
+}
+
+function resetZipState() {
+    // This function now only resets the *modified* data.
+    // The currentZipFile and its display are managed separately.
+    modifiedZipBlob = null;
+    zipDataCache = null;
+    editPackagesButton.style.display = 'none';
+
+    // If we are truly resetting, clear the display text too.
+    // This happens when a new file is chosen.
+    if (!currentZipFile) {
+        zipFileNameDisplay.textContent = '';
+    }
+}
+
+async function handleSavePackages() {
+    if (!zipDataCache) return;
+
+    const playerRows = playerListContainer.querySelectorAll('.player-row');
+    const updatedPlayers = [...zipDataCache.players];
+
+    playerRows.forEach(row => {
+        const index = parseInt(row.dataset.index, 10);
+        const selectedPackage = row.querySelector('select').value;
+        updatedPlayers[index].PACKAGE_SELECTION = selectedPackage;
+    });
+
+    const newCsvContent = Papa.unparse(updatedPlayers, { header: true });
+
+    zipDataCache.zip.file("players.csv", newCsvContent);
+
+    try {
+        modifiedZipBlob = await zipDataCache.zip.generateAsync({ type: "blob" });
+        console.log("New zip file created in memory.");
+
+        packagesModal.style.display = 'none';
+        uploadButton.disabled = false;
+        uploadButton.textContent = "Upload";
+        editPackagesButton.style.display = 'inline-block'; // Show the edit button
+
+    } catch (error) {
+        alert("Failed to generate the updated zip file. Please try again.");
+        console.error("Zip generation error:", error);
+        resetZipState();
+    }
+} 

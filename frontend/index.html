@@ -16,9 +16,13 @@
         <input type="text" id="folderName" name="folderName" disabled>
 
         <label for="zipFile">Optional Zip File:</label>
-        <input type="file" id="zipFile" name="zipFile" accept=".zip">
+        <div class="zip-input-container">
+            <input type="file" id="zipFile" name="zipFile" accept=".zip">
+            <button id="edit-packages-button" style="display: none;">Edit Packages</button>
+        </div>
+        <span id="zip-file-name" class="file-name-display"></span>
 
-        <div class="upload-mode">
+        <div class="upload-mode" style="display: none;">
             <label><input type="radio" name="video-mode" value="single" checked> Upload Single Video</label>
             <label><input type="radio" name="video-mode" value="multiple"> Concatenate Multiple Videos</label>
         </div>
@@ -55,8 +59,26 @@
             </button>
         </div>
     </div>
+
+    <!-- Player Packages Modal -->
+    <div id="packages-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <h2>Select Player Packages</h2>
+            <p>For each player, choose a package option.</p>
+            <div id="player-list-container">
+                <!-- Player rows will be dynamically inserted here -->
+            </div>
+            <div class="modal-actions">
+                <button id="save-packages-button" class="button-primary">Update</button>
+                <button id="cancel-packages-button" class="button-secondary">Cancel</button>
+            </div>
+        </div>
+    </div>
+    
     <!-- For drag-and-drop reordering. Loaded here to ensure it's available for script.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
     <script src="script.js?v=1.0.0"></script>
 </body>
 </html> 
